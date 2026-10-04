@@ -1,0 +1,253 @@
+# Day 2 — Active Directory Client Integration, Group Policy & DNS Troubleshooting
+## Objective
+The objective of Day 2 was to expand the existing Active Directory environment by deploying a Windows 11 Pro client, joining it to the domain, implementing organizational structures and security groups, deploying a workstation Group Policy Object (GPO), and performing a controlled DNS troubleshooting exercise.
+
+## Environment
+| System              | Hostname | Role                       |
+| ------------------- | -------- | -------------------------- |
+| Proxmox             | MS01     | Virtualization host        |
+| Windows Server 2022 | WS01     | Domain Controller and DNS  |
+| Windows 11 Pro      | AC02     | Domain-joined workstation  |
+| Windows 10 Home     | AC01     | Physical test client       |
+| Linux Mint          | OPS01    | Administration workstation |
+
+**Active Directory domain:** `blackwood.local`
+**NetBIOS domain:** `BLACKWOOD`
+*Note: Network addresses have been masked in this public documentation.*
+## 1. Windows 11 Client Deployment
+Created a new Windows 11 Pro virtual machine in Proxmox to serve as a domain-capable workstation.
+
+### Virtual Machine Configuration
+* VM ID: 101
+* Hostname: AC02
+* Operating System: Windows 11 Pro
+* CPU: 2 virtual cores
+* Memory: 8 GB
+* Virtual Disk: 100 GB
+* Firmware: UEFI (OVMF)
+* TPM: 2.0
+* Network: VirtIO bridge with Intel E1000 virtual NIC
+The Windows installation initially encountered a UEFI boot issue. This was resolved by adjusting the VM boot order and moving the Windows installation ISO to the top of the boot list.
+Windows 11 Pro was successfully installed.
+
+## 2. DNS Configuration and Domain Join
+Configured AC02 to use WS01 as its preferred DNS server.
+Active Directory clients must use the domain's DNS infrastructure to locate domain controllers and associated services.
+After configuring DNS, verified domain name resolution:
+```cmd
+nslookup blackwood.local
+```
+The domain successfully resolved to WS01.
+Joined AC02 to the `blackwood.local` domain using domain administrator credentials.
+After restarting, successfully logged in using:
+```text
+BLACKWOOD\labuser
+```
+### Domain Membership Verification
+Executed:
+```cmd
+whoami
+```
+Result:
+```text
+blackwood\labuser
+```
+Executed:
+```cmd
+systeminfo | findstr /B /C:"Domain"
+```
+Result:
+```text
+Domain: BLACKWOOD
+```
+Executed:
+```cmd
+echo %logonserver%
+```
+Result:
+```text
+\\WS01
+```
+These results confirmed successful domain membership and authentication against the domain controller.
+
+## 3. Active Directory Organizational Structure
+Created and organized the following Organizational Units (OUs):
+```text
+blackwood.local
+├── Domain Controllers
+│   └── WS01
+├── Groups
+│   ├── IT-Admins
+│   ├── IT-Helpdesk
+│   └── Lab-Users
+├── Servers
+├── Users
+│   └── labuser
+└── Workstations
+    └── AC02
+```
+Created the following security groups:
+* IT-Admins
+* IT-Helpdesk
+* Lab-Users
+Added `labuser` to the custom `Lab-Users` security group and verified group membership.
+Moved AC02 from the default Computers container into the Workstations OU.
+WS01 remained in the default Domain Controllers OU.
+
+## 4. Group Policy Implementation
+Created a new Group Policy Object:
+**Workstation - Security Baseline**
+Linked the GPO to the Workstations OU.
+Configured the Windows Defender Firewall Domain Profile:
+
+```text
+Computer Configuration
+└── Policies
+    └── Windows Settings
+        └── Security Settings
+            └── Windows Defender Firewall
+                └── Windows Defender Firewall with Advanced Security
+```
+
+Configured the Domain Profile firewall state to **On**.
+### GPO Security Configuration
+Verified:
+* GPO linked to the Workstations OU
+* Security Filtering: Authenticated Users
+* Read permission: Enabled
+* Apply Group Policy permission: Enabled
+* Enforced: No
+The GPO did not require enforcement because it was directly linked to the target OU.
+### Group Policy Verification
+On AC02, executed:
+```cmd
+gpupdate /force
+```
+Then verified computer policy using an elevated Command Prompt:
+```cmd
+gpresult /r /scope computer
+```
+Confirmed the following appeared under Applied Group Policy Objects:
+```text
+Workstation - Security Baseline
+```
+The workstation successfully received the linked domain policy.
+
+## 5. Controlled DNS Troubleshooting Exercise
+Performed a deliberate DNS configuration failure to understand the dependency between Active Directory, DNS, and Group Policy processing.
+### Initial Configuration
+AC02 was correctly configured to use WS01 as its DNS server.
+The working DNS configuration allowed the client to resolve:
+* blackwood.local
+* ws01.blackwood.local
+Group Policy processing completed successfully.
+### Failure Introduction
+Temporarily changed AC02's DNS server from the domain controller to the home router.
+This simulated a common workstation misconfiguration.
+The IP address, subnet mask, and default gateway were left unchanged.
+### Observed Symptoms
+Tested domain resolution:
+```cmd
+nslookup blackwood.local
+```
+Result: DNS resolution failed because the router did not host the Active Directory DNS zone.
+Tested domain controller hostname resolution:
+```cmd
+nslookup ws01.blackwood.local
+```
+Result: DNS resolution failed.
+Tested Group Policy processing:
+```cmd
+gpupdate /force
+```
+Result:
+```text
+Windows could not resolve the computer name.
+```
+An additional domain controller discovery test using:
+```cmd
+nltest /dsgetdc:blackwood.local
+```
+initially returned WS01. This demonstrated that cached or previously obtained domain discovery information can temporarily make some tests appear successful even when DNS is incorrectly configured.
+### Root Cause
+The workstation was using the home router as its DNS server instead of the Active Directory DNS server.
+The router could resolve public internet names but did not contain the internal `blackwood.local` DNS zone or the records needed for domain controller discovery.
+### Corrective Action
+Restored AC02's preferred DNS server to WS01.
+Flushed the local DNS resolver cache:
+```cmd
+ipconfig /flushdns
+```
+Retested domain controller resolution:
+```cmd
+nslookup ws01.blackwood.local
+```
+Confirmed the domain controller resolved successfully.
+Retested Group Policy processing:
+```cmd
+gpupdate /force
+```
+Verified successful policy processing.
+Finally, executed:
+```cmd
+gpresult /r /scope computer
+```
+Confirmed that **Workstation - Security Baseline** appeared under Applied Group Policy Objects.
+### Troubleshooting Outcome
+<ins>Issue successfully identified and resolved.</ins>
+This exercise demonstrated how an incorrect DNS configuration can interfere with Active Directory communication and prevent successful Group Policy processing.
+
+## 6. Skills Demonstrated
+### Windows Administration
+* Windows 11 Pro deployment
+* Virtual machine configuration
+* Domain joining
+* Domain authentication
+* Local and domain command-line administration
+
+### Active Directory
+* Domain user management
+* Security group creation
+* OU organization
+* Group membership management
+* Workstation organization
+
+### Group Policy
+* GPO creation
+* GPO linking
+* Security filtering
+* Delegation permissions
+* Computer policy verification
+* Windows Defender Firewall policy configuration
+
+### DNS and Troubleshooting
+* DNS client configuration
+* Internal DNS resolution
+* Domain controller discovery
+* DNS cache management
+* Group Policy troubleshooting
+* Root cause identification
+* Service restoration and verification
+
+## 7. Results
+Successfully expanded the Blackwood homelab with a domain-joined Windows 11 Pro workstation.
+Implemented a workstation security policy and verified successful policy application.
+Completed a controlled DNS failure exercise, identified the incorrect DNS configuration, restored the correct domain DNS server, and verified recovery.
+The environment now supports practical testing of domain authentication, centralized workstation management, Group Policy, DNS, and Windows client troubleshooting.
+
+## 8. Next Steps
+Planned work for upcoming lab sessions:
+
+* Additional Group Policy configurations
+* User onboarding and offboarding exercises
+* Linux server deployment
+* SSH and Linux administration
+* Network troubleshooting and Wireshark
+* NAS and backup implementation
+* Monitoring and centralized logging
+* Security testing in an isolated environment
+* PowerShell automation
+---
+**Project:** Blackwood IT Lab
+**Lab Day:** 2
+**Status:** Completed
