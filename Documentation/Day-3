@@ -1,0 +1,384 @@
+# Day 3 — Ubuntu Server Deployment, SSH & Linux Administration
+## Objective
+The objective of Day 3 was to expand the Blackwood IT Lab beyond Windows infrastructure by deploying an Ubuntu Server virtual machine and establishing the foundation for Linux administration.
+The lab focused on installing and updating Ubuntu Server, learning basic Linux system administration commands, examining LVM storage, configuring remote administration through SSH, enabling a host-based firewall, verifying listening network services, and practicing basic Linux filesystem operations.
+
+## Environment
+| System | Hostname | Role |
+|---|---|---|
+| Proxmox | MS01 | Virtualization host |
+| Windows Server 2022 | WS01 | Active Directory Domain Controller / DNS |
+| Windows 11 Pro | AC02 | Domain-joined workstation |
+| Ubuntu Server 26.04.1 LTS | UBV01 | Linux server |
+| Linux Mint | OPS01 | Administration workstation |
+**Active Directory Domain:** `blackwood.local`
+
+## 1. Ubuntu Server VM Deployment
+Created a new virtual machine on MS01 for Linux server administration.
+
+### Virtual Machine Configuration
+- Hostname: UBV01
+- Operating System: Ubuntu Server 26.04.1 LTS
+- CPU: 2 virtual cores
+- Memory: 2 GB
+- Virtual Disk: 32 GB
+- Network Bridge: `vmbr0`
+- Network Interface: `ens18`
+The standard Ubuntu Server installation was selected rather than the minimized installation.
+Third-party drivers were not installed because UBV01 operates using virtualized hardware provided by Proxmox.
+
+## 2. Initial Network Configuration
+During installation, UBV01 successfully received an IPv4 address from the existing DHCP server.
+The `ens18` interface received an address on the lab's `192.168.50.0/24` network.
+DHCP was intentionally retained during the initial deployment to verify network functionality before making permanent addressing changes.
+After installation, network configuration was inspected using:
+```bash
+ip addr
+```
+Routing information was checked using:
+```bash
+ip route
+```
+Connectivity to the Windows Server domain controller was tested:
+```bash
+ping -c 4 192.168.50.20
+```
+The test completed with 0% packet loss.
+External network connectivity and DNS resolution were tested using:
+```bash
+ping -c 4 google.com
+```
+This also completed with 0% packet loss.
+These tests confirmed that UBV01 had working local network connectivity, routing, DNS resolution, and internet access.
+
+## 3. Linux Administrative Account
+During Ubuntu installation, a dedicated local administrative account was created:
+```text
+labadmin
+```
+The account was configured with `sudo` privileges rather than administering the server by directly logging in as the root account.
+Basic identity information was verified using:
+```bash
+hostname
+```
+and:
+```bash
+whoami
+```
+Results confirmed the expected hostname and administrative user:
+```text
+ubv01
+labadmin
+```
+
+## 4. OpenSSH Deployment
+The OpenSSH Server package was selected during Ubuntu installation.
+After the initial boot, the SSH service was verified using:
+```bash
+sudo systemctl status ssh
+```
+The service reported:
+```text
+Active: active (running)
+```
+This confirmed that the SSH daemon was running and available for remote administration.
+
+## 5. Remote Administration from OPS01
+From the Linux Mint administration workstation, an SSH connection was initiated to UBV01:
+```bash
+ssh labadmin@<UBV01-IP>
+```
+During the first connection, the SSH host fingerprint was reviewed and accepted, adding UBV01 to the workstation's known hosts.
+Authentication was completed using the `labadmin` credentials.
+After connecting, the remote system was verified with:
+```bash
+hostname
+whoami
+```
+The results confirmed that commands entered from OPS01 were executing remotely on UBV01.
+Successful SSH administration allowed routine management to move away from the Proxmox console.
+
+## 6. System Updates
+Ubuntu's package information was refreshed using:
+```bash
+sudo apt update
+```
+Available upgrades were reviewed:
+```bash
+apt list --upgradable
+```
+Updates were then installed:
+```bash
+sudo apt upgrade
+```
+After installation, the system was checked to determine whether a reboot was required:
+```bash
+test -f /var/run/reboot-required && echo "Reboot required" || echo "No reboot required"
+```
+Result:
+```text
+No reboot required
+```
+UBV01 was fully updated without requiring a restart.
+
+## 7. Basic Linux Administration
+Several common Linux administration commands were practiced.
+### Current Directory
+```bash
+pwd
+```
+Used to display the current working directory.
+### File Listing
+```bash
+ls -lah
+```
+Used to display directory contents, including hidden files, detailed permissions, ownership, and human-readable file sizes.
+### Filesystem Usage
+```bash
+df -h
+```
+Used to inspect mounted filesystems and available storage.
+The root filesystem `/` reported approximately:
+```text
+Size:       15 GB
+Used:       5.4 GB
+Available:  8.6 GB
+Usage:      39%
+```
+### Memory Usage
+```bash
+free -h
+```
+Used to inspect system RAM and swap utilization.
+### System Uptime
+```bash
+uptime
+```
+Used to view system uptime and load averages.
+### Service Management
+```bash
+systemctl status ssh
+```
+Used to inspect the current state of the OpenSSH service.
+This introduced the use of `systemd` and `systemctl` for Linux service management.
+
+## 8. LVM Storage Investigation
+Although UBV01 was configured with a 32 GB virtual disk, the root filesystem initially appeared to contain approximately 15 GB.
+Rather than assuming storage was missing, the underlying LVM configuration was investigated.
+Physical volumes were inspected:
+```bash
+sudo pvs
+```
+Volume groups were inspected:
+```bash
+sudo vgs
+```
+Logical volumes were inspected:
+```bash
+sudo lvs
+```
+The volume group reported approximately:
+```text
+VSize: 30 GB
+VFree: 15 GB
+```
+This demonstrated that approximately 30 GB of the virtual disk had been assigned to the LVM volume group, while only approximately 15 GB had been allocated to the root logical volume.
+The remaining approximately 15 GB was available within LVM for future allocation.
+### Storage Hierarchy
+The exercise demonstrated the relationship between:
+```text
+Virtual Disk
+    ↓
+Disk Partition
+    ↓
+LVM Physical Volume
+    ↓
+Volume Group
+    ↓
+Logical Volume
+    ↓
+Filesystem
+    ↓
+/
+```
+The unused LVM capacity was intentionally left available for a future storage administration exercise.
+
+## 9. UFW Firewall Configuration
+Ubuntu's Uncomplicated Firewall (UFW) was inspected:
+```bash
+sudo ufw status
+```
+Initial result:
+```text
+Status: inactive
+```
+Before enabling the firewall, SSH access was explicitly permitted:
+```bash
+sudo ufw allow OpenSSH
+```
+The configured rule was reviewed:
+```bash
+sudo ufw show added
+```
+UFW was then enabled:
+```bash
+sudo ufw enable
+```
+Firewall status and policy were verified:
+```bash
+sudo ufw status verbose
+```
+The resulting configuration allowed OpenSSH while enabling host-based firewall protection.
+The configuration followed an important administration principle:
+> Permit required remote-management access before enabling a firewall remotely.
+
+## 10. Firewall and SSH Verification
+After enabling UFW, the existing SSH session was intentionally kept open.
+A second terminal was opened on OPS01 and another SSH connection to UBV01 was attempted.
+Authentication succeeded.
+This verified that:
+- UFW was active.
+- Incoming SSH traffic was permitted.
+- OpenSSH remained reachable through the firewall.
+- Remote administration had not been accidentally blocked.
+
+## 11. Listening Network Services
+Listening network sockets were inspected using:
+```bash
+sudo ss -tulpn
+```
+The output confirmed that the SSH daemon was listening for TCP connections on port:
+```text
+22
+```
+This demonstrated the relationship between:
+```text
+Remote Client
+    ↓
+Network
+    ↓
+UFW Firewall Rule
+    ↓
+TCP Port 22
+    ↓
+OpenSSH / sshd
+    ↓
+UBV01
+```
+This also introduced the process of checking which services are actively listening for network connections rather than assuming that an installed service is reachable.
+
+## 12. Linux Filesystem Exercise
+A basic filesystem exercise was completed through the remote SSH session.
+Returned to the user's home directory:
+```bash
+cd ~
+```
+Created a directory:
+```bash
+mkdir lab-notes
+```
+Entered the directory:
+```bash
+cd lab-notes
+```
+Verified the working directory:
+```bash
+pwd
+```
+Created a text file:
+```bash
+echo "Blackwood IT Lab - UBV01" > server-info.txt
+```
+Inspected the file and its permissions:
+```bash
+ls -l
+```
+Read the file:
+```bash
+cat server-info.txt
+```
+Appended additional information without overwriting the existing contents:
+```bash
+echo "SSH and UFW configured successfully" >> server-info.txt
+```
+Verified the resulting file:
+```bash
+cat server-info.txt
+```
+This exercise introduced basic Linux directory navigation, file creation, permissions, output redirection, and file inspection.
+It also demonstrated the difference between:
+```text
+>    Create/overwrite a file
+>>   Append to a file
+```
+
+## 13. Skills Demonstrated
+### Linux Administration
+- Ubuntu Server installation
+- Command-line navigation
+- Package management with APT
+- System updates
+- User administration concepts
+- Filesystem inspection
+- Memory and disk utilization inspection
+- Service management with `systemctl`
+- Basic file and directory management
+- Linux file permissions
+- Output redirection
+
+### Storage
+- LVM fundamentals
+- Physical volume inspection
+- Volume group inspection
+- Logical volume inspection
+- Filesystem versus underlying storage capacity
+- Identification of unused LVM capacity
+
+### Networking
+- Linux interface inspection
+- Routing table inspection
+- LAN connectivity testing
+- DNS resolution testing
+- TCP listening-port inspection
+
+### Remote Administration
+- OpenSSH Server
+- SSH client connections
+- SSH host fingerprints
+- Remote command-line administration
+- Verification of remote identity
+
+### Security
+- UFW host firewall
+- Default firewall behavior
+- Explicit SSH allow rules
+- Safe remote firewall configuration
+- Network service verification
+
+## 14. Results
+Successfully deployed **UBV01**, the first Linux server in the Blackwood IT Lab.
+UBV01 has working LAN and internet connectivity and can communicate with the existing Windows infrastructure.
+Remote SSH administration from OPS01 was successfully established.
+The server was updated and inspected using standard Linux administration utilities.
+The LVM storage configuration was investigated, identifying approximately 15 GB of currently unallocated capacity inside the volume group for future use.
+UFW was enabled with an explicit OpenSSH rule, and remote SSH connectivity was successfully verified after firewall activation.
+Basic Linux filesystem operations and permissions were also practiced.
+UBV01 now provides a Linux platform for future server, networking, monitoring, automation, and security exercises.
+
+## 15. Next Steps
+Future lab work will build on UBV01 with:
+- Additional Linux user and permission management
+- SSH key authentication
+- Linux service deployment
+- Additional firewall configuration
+- LVM expansion and storage administration
+- Network troubleshooting
+- Log analysis
+- Monitoring
+- Automation
+- Integration with other Blackwood lab infrastructure
+---
+**Project:** Blackwood IT Lab  
+**Lab Day:** 3  
+**System:** UBV01  
+**Status:** Completed
