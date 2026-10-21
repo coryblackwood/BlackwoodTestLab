@@ -1,0 +1,454 @@
+# Day 4 — Active Directory User Lifecycle, File Sharing & Access Troubleshooting
+## Objective
+The objective of Day 4 was to simulate common Tier 1/2 IT administration tasks involving employee onboarding, Active Directory security groups, network file shares, Group Policy drive mapping, access troubleshooting, and employee offboarding.
+A fictional employee was provisioned in Active Directory, granted departmental access through group membership, provided a network drive automatically through Group Policy, intentionally subjected to an access failure, and ultimately offboarded.
+This exercise demonstrated the difference between authentication, authorization, Group Policy configuration, and Windows security group membership.
+
+## Environment
+| System | Hostname | Role |
+|---|---|---|
+| Proxmox | MS01 | Virtualization host |
+| Windows Server 2022 | WS01 | Active Directory / DNS / File Server |
+| Windows 11 Pro | AC02 | Domain-joined workstation |
+| Ubuntu Server | UBV01 | Linux server |
+| Linux Mint | OPS01 | Administration workstation |
+**Domain:** `blackwood.local`  
+**NetBIOS Domain:** `BLACKWOOD`
+
+## 1. Departmental Active Directory Structure
+Created a new Organizational Unit:
+```text
+Operations
+```
+This OU was used to organize user objects belonging to the fictional Operations department.
+A new security group was also created inside the existing Groups OU:
+```text
+Operations-Users
+```
+Configuration:
+```text
+Group scope: Global
+Group type:  Security
+```
+This demonstrated an important distinction:
+```text
+Organizational Unit
+    → Organizes and manages AD objects
+Security Group
+    → Assigns permissions/access
+```
+Rather than assigning resource permissions directly to individual users, departmental access was designed around security group membership.
+
+## 2. Employee Onboarding
+Created a fictional employee account:
+```text
+Name:     Jordan Reed
+Username: jreed
+UPN:      jreed@blackwood.local
+```
+The account was created inside the Operations OU.
+A temporary lab-only password was assigned and:
+```text
+User must change password at next logon
+```
+was enabled.
+This simulated an onboarding workflow in which IT provisions an initial account while requiring the employee to establish a new password during first login.
+Jordan was then added to:
+```text
+Operations-Users
+```
+Group membership was verified on WS01 using PowerShell:
+```powershell
+Get-ADUser jreed -Properties MemberOf | Select-Object -ExpandProperty MemberOf
+```
+The resulting membership included:
+```text
+CN=Operations-Users,OU=Groups,DC=blackwood,DC=local
+```
+
+## 3. Departmental Network Share
+Created a departmental directory on WS01:
+```text
+C:\Shares\Operations
+```
+The directory was shared as:
+```text
+\\WS01\Operations
+```
+A test document was placed inside the share:
+```text
+Operations-Welcome.txt
+```
+### Share Permissions
+Rather than granting Jordan direct access, permissions were assigned to:
+```text
+Operations-Users
+```
+The group received:
+```text
+Change
+Read
+```
+Full Control was intentionally not granted.
+### NTFS Permissions
+The same security group received NTFS permissions including:
+```text
+Modify
+Read & execute
+List folder contents
+Read
+Write
+```
+This created the authorization chain:
+```text
+jreed
+   ↓
+Operations-Users
+   ↓
+Share Permissions
+   +
+NTFS Permissions
+   ↓
+\\WS01\Operations
+```
+This demonstrated the principle of granting resource permissions to groups rather than individual user accounts.
+
+## 4. First Domain Login
+Jordan signed into AC02 using:
+```text
+BLACKWOOD\jreed
+```
+Windows required the temporary password to be changed during first login.
+After the profile was created, domain authentication was verified:
+```cmd
+whoami
+```
+Result:
+```text
+blackwood\jreed
+```
+The authenticating domain controller was verified:
+```cmd
+echo %logonserver%
+```
+Result:
+```text
+\\WS01
+```
+Security group membership was inspected using:
+```cmd
+whoami /groups
+```
+`BLACKWOOD\Operations-Users` appeared in the user's security context.
+
+## 5. Network Share Access Verification
+From AC02, Jordan accessed:
+```text
+\\WS01\Operations
+```
+The existing welcome document could be opened successfully.
+To verify Modify permissions, Jordan:
+- Created a new file.
+- Opened the file.
+- Modified its contents.
+- Saved the file.
+- Deleted the file.
+All operations succeeded.
+This verified that the combined Share and NTFS permissions were functioning as intended.
+
+## 6. Automatic Drive Mapping with Group Policy
+Created a new Group Policy Object:
+```text
+Operations - Mapped Drive
+```
+The GPO was linked to the Operations OU.
+A Group Policy Preference was configured under:
+```text
+User Configuration
+└── Preferences
+    └── Windows Settings
+        └── Drive Maps
+```
+Configuration:
+```text
+Action:       Update
+Location:     \\WS01\Operations
+Label:        Operations
+Drive Letter: O:
+```
+On AC02, Group Policy was refreshed:
+```cmd
+gpupdate /force
+```
+Jordan then signed out and signed back in.
+File Explorer automatically displayed:
+```text
+Operations (\\WS01\Operations) (O:)
+```
+The files remained accessible through the mapped drive.
+This demonstrated that **drive mapping and resource authorization are separate functions**:
+```text
+Group Policy
+    ↓
+Maps O:
+
+Operations-Users
+    ↓
+Grants permission to the contents
+```
+A mapped drive does not itself grant access to the underlying files.
+
+## 7. Controlled Help-Desk Incident
+A simulated support ticket was created:
+> Jordan Reed reports that the Operations drive is visible but can no longer be accessed.
+To create the failure, Jordan was intentionally removed from:
+```text
+Operations-Users
+```
+Jordan then completely signed out of AC02 and signed back in so that a new Windows security token would be generated.
+The following command was used:
+```cmd
+whoami /groups
+```
+`Operations-Users` was no longer present.
+However, the O: drive remained mapped.
+Attempting to access the drive resulted in an access-denied message.
+This produced the intended condition:
+```text
+Mapped drive:       Present
+GPO:                Working
+Domain login:       Working
+Resource access:    Failed
+Group membership:   Missing
+```
+
+## 8. Troubleshooting the Access Failure
+Rather than immediately changing permissions, the failure was investigated from the client side.
+Mapped network connections were inspected:
+```cmd
+net use
+```
+The O: drive remained mapped to:
+```text
+\\WS01\Operations
+```
+Group Policy application was inspected:
+```cmd
+gpresult /r
+```
+The mapped-drive GPO remained applicable to Jordan's user account.
+The troubleshooting evidence showed:
+```text
+Can user authenticate?               Yes
+Can user log into the domain?        Yes
+Is O: mapped?                        Yes
+Is the mapping GPO functioning?      Yes
+Can the user access O:?              No
+Is Operations-Users in user token?   No
+```
+The issue was therefore isolated to **authorization/group membership**, rather than DNS, network connectivity, authentication, Group Policy, or the drive mapping itself.
+### Root Cause
+Jordan had been removed from the security group that provided access to the Operations share.
+### Corrective Action
+Jordan was added back to:
+```text
+Operations-Users
+```
+The user completely signed out and signed back into AC02.
+Access to O: was restored.
+Jordan could once again read, create, edit, and delete files.
+
+## 9. Additional Security Token / Kerberos Troubleshooting
+After restoring the group membership, an unexpected behavior was observed.
+Active Directory correctly showed Jordan as a member of `Operations-Users`, and Jordan could successfully modify files on the Operations share.
+However:
+```cmd
+whoami /groups
+```
+did not initially display `Operations-Users`.
+Additional verification was performed.
+From AC02:
+```cmd
+net user jreed /domain
+```
+showed Jordan as a member of:
+```text
+Operations-Users
+```
+From WS01:
+```powershell
+Get-ADGroupMember "Operations-Users"
+```
+also confirmed Jordan's membership.
+This produced an interesting discrepancy:
+```text
+Active Directory membership:   Correct
+Domain account query:          Correct
+Resource access:               Working
+Current token reporting:       Unexpected
+```
+The current Kerberos state was inspected using:
+```cmd
+klist
+```
+Kerberos tickets were then purged:
+```cmd
+klist purge
+```
+Jordan completely signed out of Windows and signed back in.
+The security groups were checked again:
+```cmd
+whoami /groups | findstr /I "Operations"
+```
+`Operations-Users` now appeared correctly.
+### Troubleshooting Lesson
+This demonstrated that Active Directory state and a user's current Windows session are not always identical.
+Group membership changes may require authentication/session state to be refreshed before every diagnostic tool reflects the updated authorization state.
+It also reinforced the importance of comparing multiple sources of evidence rather than assuming a single command tells the entire story.
+
+## 10. Employee Offboarding
+A simulated employee offboarding request was performed for Jordan Reed.
+Rather than immediately deleting the AD account, the account was disabled.
+Jordan was also removed from:
+```text
+Operations-Users
+```
+The default Domain Users membership was retained.
+Resulting state:
+```text
+jreed
+├── Account: Disabled
+├── Domain Users: Retained
+└── Operations-Users: Removed
+```
+Account status was verified using PowerShell:
+```powershell
+Get-ADUser jreed -Properties Enabled,MemberOf |
+    Select-Object SamAccountName,Enabled,MemberOf
+```
+The account reported:
+```text
+SamAccountName : jreed
+Enabled        : False
+```
+Jordan was completely signed out of AC02.
+A subsequent login attempt using:
+```text
+BLACKWOOD\jreed
+```
+was rejected as expected.
+This verified that the disabled account could no longer authenticate.
+
+## 11. Why Disable Instead of Immediately Delete?
+Disabling an account provides an immediate and reversible method of preventing authentication while preserving the Active Directory object.
+In a production organization, account retention may be necessary for:
+- Auditing
+- Data retention
+- File ownership
+- Investigations
+- Organizational policy
+- Recovery from an incorrect offboarding request
+Actual offboarding procedures and retention periods depend on organizational policy.
+The lab therefore used a **disable-first** approach rather than immediately deleting the account.
+
+## 12. Skills Demonstrated
+### Active Directory
+- User provisioning
+- Organizational Units
+- Security groups
+- Group membership administration
+- User account disabling
+- Employee onboarding
+- Employee offboarding
+- PowerShell AD verification
+
+### Windows File Services
+- SMB network shares
+- Share permissions
+- NTFS permissions
+- Modify versus Full Control
+- Group-based resource authorization
+- Network file access testing
+
+### Group Policy
+- User-side GPOs
+- Group Policy Preferences
+- Automatic network drive mapping
+- GPO verification
+- `gpupdate`
+- `gpresult`
+
+### Authentication & Authorization
+- Domain authentication
+- Security groups
+- Windows access tokens
+- Kerberos ticket inspection
+- Authentication versus authorization
+- Session/token refresh behavior
+
+### Troubleshooting
+- Reproducing an access problem
+- Verifying user identity
+- Verifying network-drive mapping
+- Verifying Group Policy
+- Inspecting group membership
+- Isolating an authorization failure
+- Correcting the root cause
+- Purging Kerberos tickets
+- Verifying recovery
+
+## 13. Troubleshooting Summary
+### Incident
+User could see the Operations mapped drive but could not access it.
+### Symptoms
+```text
+O: drive visible
+Domain authentication working
+Mapped-drive GPO working
+Operations share inaccessible
+```
+### Investigation
+```cmd
+whoami /groups
+net use
+gpresult /r
+net user jreed /domain
+klist
+```
+Server-side verification included:
+```powershell
+Get-ADGroupMember "Operations-Users"
+```
+### Root Cause
+Required security-group membership was missing.
+### Resolution
+Restored `Operations-Users` membership and refreshed the user's authentication/session state.
+### Verification
+The user regained Modify access to the Operations share, and the expected security group appeared in the refreshed security context.
+
+## 14. Results
+Successfully completed an end-to-end Active Directory user lifecycle exercise.
+A fictional employee was:
+```text
+Created
+   ↓
+Assigned departmental access
+   ↓
+Logged into a domain workstation
+   ↓
+Granted access to a network share
+   ↓
+Automatically provided a mapped drive through GPO
+   ↓
+Subjected to a controlled access failure
+   ↓
+Troubleshot and restored
+   ↓
+Offboarded
+```
+The exercise demonstrated how Active Directory identities, security groups, NTFS permissions, SMB share permissions, Group Policy, Windows access tokens, and Kerberos authentication interact in a domain environment.
+---
+**Project:** Blackwood IT Lab  
+**Lab Day:** 4  
+**Focus:** Active Directory / File Services / Group Policy / Troubleshooting  
+**Status:** Completed
