@@ -1,0 +1,704 @@
+# Day 5 — Networking Fundamentals, Wireshark & Connectivity Troubleshooting
+## Objective
+The objective of Day 5 was to develop practical networking and troubleshooting skills using the existing Blackwood IT Lab.
+Rather than studying networking concepts only in theory, I used Windows and Linux networking tools, Wireshark packet captures, DNS queries, TCP connection testing, and a controlled firewall failure to observe how communication actually occurs between systems.
+
+Topics included:
+- IPv4 addressing and subnetting
+- Local versus routed traffic
+- Default gateways
+- ARP and MAC address resolution
+- DNS resolution
+- TCP and UDP ports
+- ICMP
+- TCP connection establishment
+- Wireshark packet analysis
+- Linux firewall troubleshooting
+- Layered network troubleshooting
+---
+## Environment
+| System | Address | Role |
+|---|---|---|
+| MS01 | 192.168.50.10 | Proxmox virtualization host |
+| WS01 | 192.168.50.20 | Windows Server 2022 / AD / DNS / SMB |
+| AC02 | 192.168.50.126 | Windows 11 Pro domain workstation |
+| UBV01 | 192.168.50.219 | Ubuntu Server / SSH |
+| OPS01 | 192.168.50.242 wired | Linux Mint administration workstation |
+| Router | 192.168.50.1 | Default gateway |
+Network:
+```text
+192.168.50.0/24
+```
+OPS01 also had a separate Wi-Fi interface, which helped demonstrate that a system can have multiple network interfaces and IP addresses simultaneously.
+---
+
+# 1. Inspecting Windows Network Configuration
+On AC02:
+```cmd
+ipconfig /all
+```
+The active network configuration was identified as:
+```text
+IPv4 Address:    192.168.50.126
+Subnet Mask:     255.255.255.0
+Default Gateway: 192.168.50.1
+DNS Server:      192.168.50.20
+```
+The subnet mask:
+```text
+255.255.255.0
+```
+is equivalent to:
+```text
+/24
+```
+A `/24` IPv4 network uses 24 bits for the network portion and 8 bits for host addresses.
+For the Blackwood network:
+```text
+Network:          192.168.50.0
+First usable:     192.168.50.1
+Last usable:      192.168.50.254
+Broadcast:        192.168.50.255
+Usable addresses: 254
+```
+This means AC02 (`.126`) and WS01 (`.20`) are members of the same local subnet.
+---
+
+# 2. Local Traffic vs. Routed Traffic
+The Windows routing table was inspected using:
+```cmd
+route print
+```
+The default route beginning with:
+```text
+0.0.0.0    0.0.0.0
+```
+identified the route used when Windows does not have a more specific path to a destination.
+Traceroute was then used to compare local and Internet traffic:
+```cmd
+tracert 192.168.50.20
+```
+WS01 appeared immediately as the first destination because AC02 and WS01 are on the same subnet.
+An external destination was then tested:
+```cmd
+tracert 8.8.8.8
+```
+The first hop was:
+```text
+192.168.50.1
+```
+followed by additional Internet routing hops before reaching Google's DNS infrastructure.
+This demonstrated the difference between:
+```text
+Local destination
+AC02 → WS01
+```
+and:
+```text
+Remote destination
+AC02 → Default Gateway → Internet → Destination
+```
+A host does not need to send traffic through its default gateway when the destination is directly reachable on its local subnet.
+---
+# 3. ARP and the Neighbor Table
+On AC02:
+```cmd
+arp -a
+```
+was used to inspect the local ARP cache.
+After generating traffic:
+```cmd
+ping 192.168.50.20
+```
+WS01 appeared in the ARP table with an associated MAC address.
+This demonstrated the relationship between Layer 3 IP addressing and Layer 2 Ethernet addressing.
+Conceptually:
+```text
+192.168.50.20
+      ↓ ARP
+MAC address
+```
+For communication with another system on the local Ethernet network, the sending host needs to determine which MAC address corresponds to the destination IP address.
+---
+
+# 4. Linux Networking Tools
+UBV01 was accessed remotely over SSH and its network configuration was inspected.
+```bash
+ip addr
+```
+was used to view interfaces and IP addressing.
+Routing information was viewed using:
+```bash
+ip route
+```
+The routing table included a default route through:
+
+```text
+192.168.50.1
+```
+and a local route for:
+```text
+192.168.50.0/24
+```
+Linux neighbor information was inspected with:
+```bash
+ip neigh
+```
+After:
+```bash
+ping -c 4 192.168.50.20
+```
+WS01 appeared in the neighbor table.
+This provided a comparison between common Windows and Linux networking tools:
+```text
+Windows                 Linux
+---------------------------------------
+ipconfig /all           ip addr
+route print             ip route
+arp -a                  ip neigh
+```
+---
+
+# 5. DNS Resolution
+AC02 uses WS01 as its DNS server:
+```text
+192.168.50.20
+```
+DNS resolution was tested with:
+```cmd
+nslookup ws01.blackwood.local
+```
+and:
+```cmd
+nslookup google.com
+```
+This reinforced that AC02 sends DNS requests to WS01 even when resolving public Internet names.
+The basic process is:
+```text
+AC02
+  ↓
+DNS query
+  ↓
+WS01
+  ↓
+DNS resolution / forwarding
+  ↓
+DNS answer
+  ↓
+AC02
+```
+This also reinforced why Active Directory clients should use the appropriate AD DNS infrastructure rather than simply relying on a home router or public DNS resolver.
+---
+
+# 6. Testing Individual TCP Services
+Network connectivity to specific services was tested from AC02 using PowerShell.
+DNS on WS01:
+```powershell
+Test-NetConnection 192.168.50.20 -Port 53
+```
+Result:
+```text
+TcpTestSucceeded : True
+```
+SMB on WS01:
+```powershell
+Test-NetConnection 192.168.50.20 -Port 445
+```
+Result:
+```text
+TcpTestSucceeded : True
+```
+SSH on UBV01:
+```powershell
+Test-NetConnection 192.168.50.219 -Port 22
+```
+Result:
+```text
+TcpTestSucceeded : True
+```
+This demonstrated an important distinction:
+```text
+ping
+```
+tests ICMP reachability, while:
+```powershell
+Test-NetConnection <address> -Port <port>
+```
+can determine whether a specific TCP service is reachable.
+A successful ping does not prove that SSH, SMB, DNS, or another service is accessible.
+---
+
+# 7. Verifying SSH from the Server Side
+On UBV01:
+```bash
+sudo ss -tulpn
+```
+confirmed that SSH was listening on TCP port 22.
+The firewall configuration was checked with:
+```bash
+sudo ufw status
+```
+The OpenSSH rule was enabled.
+This provided three separate pieces of evidence:
+```text
+SSH process listening on :22       ✓
+Firewall permits OpenSSH           ✓
+Remote TCP/22 test succeeds        ✓
+```
+This distinction is useful because a service can be running locally while still being unreachable remotely due to firewall or network configuration.
+---
+
+# 8. Controlled SSH Firewall Failure
+A simulated support incident was created:
+> UBV01 is online, but users cannot connect to it over SSH.
+Before introducing the failure, SSH connectivity was confirmed to work normally.
+On UBV01, firewall rules were inspected:
+```bash
+sudo ufw status numbered
+```
+A temporary deny rule was inserted ahead of the existing SSH allow rule:
+```bash
+sudo ufw insert 1 deny 22/tcp
+```
+The existing SSH session was intentionally kept open to maintain an administrative recovery path.
+From AC02, UBV01 remained reachable by IP using ICMP.
+However:
+```powershell
+Test-NetConnection 192.168.50.219 -Port 22
+```
+failed.
+The resulting condition was:
+```text
+UBV01 powered on?        Yes
+Network reachable?       Yes
+ICMP working?            Yes
+SSH TCP/22 reachable?    No
+```
+---
+
+# 9. Diagnosing the SSH Failure
+From the existing administrative SSH session, the SSH service was checked:
+```bash
+sudo systemctl status ssh
+```
+The service remained:
+```text
+active (running)
+```
+Port 22 was inspected:
+```bash
+sudo ss -tlnp | grep ':22'
+```
+SSH was still listening locally.
+Firewall rules were then inspected:
+```bash
+sudo ufw status numbered
+```
+The evidence showed:
+```text
+Host responds to ping       ✓
+SSH service running         ✓
+Port 22 listening locally   ✓
+Remote TCP/22 connection    ✗
+Firewall DENY rule          FOUND
+```
+The failure was therefore isolated to the firewall rather than:
+- Physical connectivity
+- IP addressing
+- Routing
+- UBV01 being offline
+- SSH service failure
+The temporary deny rule was removed:
+```bash
+sudo ufw delete 1
+```
+After verifying the firewall configuration, TCP/22 was tested again from AC02:
+```powershell
+Test-NetConnection 192.168.50.219 -Port 22
+```
+Result:
+```text
+TcpTestSucceeded : True
+```
+SSH connectivity had been restored.
+---
+
+# 10. Wireshark Installation and Interface Selection
+Wireshark was installed and configured on OPS01.
+The wired network interface was identified as:
+```text
+eno1
+```
+with address:
+```text
+192.168.50.242
+```
+OPS01 also had a Wi-Fi interface with a different IP address.
+This demonstrated why selecting the correct capture interface is important when analyzing traffic.
+Capturing on the wrong interface may show different traffic or fail to show the communication being investigated.
+---
+
+# 11. ICMP Packet Capture
+Wireshark was configured with the display filter:
+```text
+icmp
+```
+Traffic was generated from OPS01:
+```bash
+ping -c 4 192.168.50.20
+```
+Eight ICMP packets were observed:
+```text
+4 Echo Requests
+4 Echo Replies
+```
+The packet details showed protocol encapsulation including:
+```text
+Frame
+└── Ethernet II
+    └── Internet Protocol Version 4
+        └── Internet Control Message Protocol
+```
+An Echo Request showed:
+```text
+Type: 8
+```
+and the corresponding Echo Reply showed:
+```text
+Type: 0
+```
+This demonstrated that `ping` uses ICMP rather than TCP or UDP.
+Because ICMP is not TCP or UDP, ping does not test a service port.
+---
+
+# 12. DNS Packet Capture
+A new Wireshark capture was started using:
+```text
+dns
+```
+OPS01 explicitly queried WS01:
+```bash
+nslookup ws01.blackwood.local 192.168.50.20
+```
+Wireshark captured the DNS query and response.
+The query used:
+```text
+Source Port:      37994
+Destination Port: 53
+```
+The response reversed those ports:
+```text
+Source Port:      53
+Destination Port: 37994
+```
+Port 53 represented the DNS service, while `37994` was a temporary client-side port used for the request.
+The DNS query requested the A record for:
+```text
+ws01.blackwood.local
+```
+and WS01 returned:
+```text
+192.168.50.20
+```
+This provided a packet-level view of DNS resolution:
+```text
+OPS01
+  │
+  │ "What IPv4 address belongs to
+  │  ws01.blackwood.local?"
+  ▼
+WS01 :53
+  │
+  │ "192.168.50.20"
+  ▼
+OPS01
+```
+---
+
+# 13. TCP Three-Way Handshake
+Wireshark was then filtered for SSH traffic:
+```text
+tcp.port == 22
+```
+A new SSH connection was initiated from OPS01 to UBV01:
+```bash
+ssh labadmin@192.168.50.219
+```
+At the beginning of the connection, the TCP three-way handshake was identified:
+```text
+OPS01                      UBV01
+  │                          │
+  │──── SYN ────────────────>│
+  │<─── SYN, ACK ────────────│
+  │──── ACK ────────────────>│
+  │                          │
+  │    Connection ready      │
+```
+This demonstrated how TCP establishes a connection before the application protocol begins communicating.
+The client connected from a temporary high-numbered port to:
+```text
+TCP/22
+```
+on UBV01.
+After the handshake, SSH traffic could be observed, but the contents of the remote terminal session were protected by SSH encryption.
+Packet capture could still reveal metadata such as:
+- Source and destination IP addresses
+- Source and destination ports
+- Packet sizes
+- Timing
+- TCP flags
+- Connection establishment
+but not simply expose the SSH password or terminal commands as plaintext.
+---
+
+# 14. Capturing ARP
+A final Wireshark capture used:
+```text
+arp
+```
+The existing neighbor entry for WS01 was removed from OPS01:
+
+```bash
+sudo ip neigh del 192.168.50.20 dev eno1
+```
+Traffic was then generated:
+```bash
+ping -c 1 192.168.50.20
+```
+Wireshark captured an ARP broadcast asking which MAC address owned:
+```text
+192.168.50.20
+```
+The request was sent to the Ethernet broadcast destination.
+Conceptually:
+```text
+OPS01
+  │
+  │ Broadcast:
+  │ "Who has 192.168.50.20?"
+  ▼
+Local Ethernet Segment
+WS01 / virtual network
+  │
+  │ ARP Reply:
+  │ "192.168.50.20 is at [MAC]"
+  ▼
+OPS01
+```
+After receiving the response, OPS01 could again associate WS01's IP address with the appropriate MAC address in its neighbor table.
+This connected several networking concepts:
+```text
+Destination IP
+      ↓
+Determine whether destination is local
+      ↓
+ARP for local destination
+      ↓
+Resolve IP to MAC address
+      ↓
+Ethernet frame delivery
+```
+---
+
+# 15. Troubleshooting Challenge — IP vs. DNS
+A hypothetical support ticket was analyzed:
+> The Operations share works using `\\192.168.50.20\Operations`, but `\\WS01\Operations` fails.
+Available evidence:
+```text
+ping 192.168.50.20
+SUCCESS
+Test-NetConnection 192.168.50.20 -Port 445
+TRUE
+\\192.168.50.20\Operations
+WORKS
+nslookup ws01.blackwood.local
+FAILS
+```
+The evidence allows several possibilities to be eliminated.
+
+```text
+Basic IP connectivity       Working
+WS01 reachable              Working
+TCP/445                     Working
+SMB share                   Working
+Name resolution             Failing
+```
+The next area to investigate would therefore be DNS/name resolution.
+An important troubleshooting distinction was identified:
+**Identifying the failing system is not the same as identifying its root cause.**
+The evidence supports the conclusion that name resolution is failing, but additional evidence would be required before claiming a specific DNS configuration problem.
+---
+
+# 16. Explicit DNS Server Testing
+The following command was discussed as a way to narrow DNS troubleshooting:
+```cmd
+nslookup ws01.blackwood.local 192.168.50.20
+```
+The command explicitly tells `nslookup` which DNS server to query.
+This can distinguish between situations such as:
+```text
+Normal DNS lookup       FAIL
+Direct query to WS01    SUCCESS
+```
+which could suggest a client DNS configuration issue, versus:
+```text
+Normal DNS lookup       FAIL
+Direct query to WS01    FAIL
+```
+which would justify further investigation of the DNS service, DNS records, firewall configuration, or related server-side issues.
+This demonstrated a core troubleshooting principle:
+> Change or isolate one variable at a time and use the result to determine the next test.
+Rather than immediately guessing the root cause, each command should answer a specific diagnostic question.
+---
+
+# 17. Network Troubleshooting Workflow
+The exercises developed the following troubleshooting model:
+```text
+Physical / Link
+      ↓
+IP Addressing
+      ↓
+Local vs. Routed Destination
+      ↓
+Routing / Gateway
+      ↓
+DNS / Name Resolution
+      ↓
+Port Reachability
+      ↓
+Firewall
+      ↓
+Service
+      ↓
+Authentication / Application
+```
+Not every incident requires testing every layer in this exact order.
+Instead, existing evidence should be used to eliminate working components and focus testing on the most likely failing area.
+For example:
+```text
+Can ping server              ✓
+Can connect to TCP/445       ✓
+Can access SMB using IP      ✓
+Cannot access SMB by name    ✗
+```
+strongly shifts the investigation toward name resolution rather than physical connectivity or SMB.
+---
+
+# 18. Key Lessons
+### IP Addresses and MAC Addresses Serve Different Purposes
+IP addresses provide logical network addressing.
+MAC addresses are used for Ethernet communication on the local network segment.
+ARP connects the two for IPv4 local-network communication.
+### The Default Gateway Is for Reaching Other Networks
+Traffic to another system inside `192.168.50.0/24` can be delivered locally.
+Traffic destined for another network is sent toward the default gateway when no more specific route exists.
+### Ping Does Not Prove a Service Works
+A successful ping demonstrates ICMP reachability.
+It does not prove that:
+```text
+SSH :22
+DNS :53
+SMB :445
+```
+are reachable.
+### A Listening Service Can Still Be Unreachable
+UBV01 demonstrated that SSH could be:
+```text
+Running              ✓
+Listening on :22     ✓
+Remote access        ✗
+```
+because a firewall blocked the connection.
+### DNS Converts Names Into Usable Network Information
+Accessing a server by hostname introduces a name-resolution dependency that does not exist when directly using its IP address.
+### Troubleshooting Requires Evidence
+A hypothesis is useful, but it should not be treated as the root cause until testing supports it.
+The goal is not to immediately know the answer.
+The goal is to determine:
+> What test should I perform next, and what will its result tell me?
+---
+
+# 19. Skills Demonstrated
+## Networking
+- IPv4 addressing
+- `/24` subnetting
+- Default gateways
+- Routing tables
+- Local versus routed communication
+- ARP
+- MAC addressing
+- ICMP
+- TCP
+- UDP
+- TCP/UDP ports
+- DNS
+- SMB
+- SSH
+## Windows Administration
+- `ipconfig`
+- `route print`
+- `arp`
+- `ping`
+- `tracert`
+- `nslookup`
+- `Test-NetConnection`
+## Linux Administration
+- `ip addr`
+- `ip route`
+- `ip neigh`
+- `ping`
+- `ss`
+- SSH
+- UFW firewall administration
+## Wireshark
+- Interface selection
+- Display filters
+- ICMP inspection
+- ARP inspection
+- DNS query/response inspection
+- UDP source/destination ports
+- TCP packet inspection
+- TCP three-way handshake analysis
+- SSH traffic observation
+## Troubleshooting
+- Establishing a known-good baseline
+- Reproducing a controlled failure
+- Separating host reachability from service reachability
+- Server-side versus client-side testing
+- Firewall troubleshooting
+- DNS troubleshooting methodology
+- Forming and testing hypotheses
+- Verifying service recovery
+---
+
+# 20. Results
+Day 5 successfully connected networking theory with observable traffic inside the Blackwood IT Lab.
+Rather than only memorizing concepts such as ARP, DNS, TCP, ports, and the three-way handshake, each was generated and inspected using real lab systems.
+The controlled SSH incident also demonstrated an end-to-end troubleshooting workflow:
+```text
+Establish baseline
+      ↓
+Introduce controlled failure
+      ↓
+Confirm host remains reachable
+      ↓
+Confirm TCP/22 fails remotely
+      ↓
+Confirm SSH remains running
+      ↓
+Confirm :22 remains listening
+      ↓
+Inspect firewall
+      ↓
+Identify deny rule
+      ↓
+Correct configuration
+      ↓
+Verify TCP/22 recovery
+```
+The lab reinforced that effective network troubleshooting is less about immediately knowing the root cause and more about gathering evidence, eliminating known-good components, and selecting the next test that most effectively narrows the problem.
+---
+**Project:** Blackwood IT Lab  
+**Lab Day:** 5  
+**Focus:** Networking / Wireshark / TCP-IP / DNS / Troubleshooting  
+**Status:** Completed
