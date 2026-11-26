@@ -1,0 +1,342 @@
+# Day 6 — Linux Web Server Deployment & Troubleshooting
+**Project:** Blackwood IT Lab  
+**Environment:** Proxmox VE, Ubuntu Server, Windows 11 Pro  
+**Focus:** Nginx, HTTP, Linux Services, Firewall Configuration, Web Server Logs, Troubleshooting  
+**Status:** Completed
+
+---
+## 1. Objective
+The objective of Day 6 was to deploy and administer a functional Linux web server using Nginx on an existing Ubuntu Server virtual machine.
+The exercise focused on understanding how web servers operate, how network services communicate over TCP ports, how Linux firewalls control incoming traffic, and how to diagnose and recover from a web service outage.
+By the end of the exercise, the server successfully hosted a custom HTML webpage accessible from a separate Windows workstation.
+
+## 2. Lab Environment
+| Device | Role | IP Address | Operating System |
+|---|---|---|---|
+| MS01 | Proxmox virtualization host | 192.168.50.10 | Proxmox VE |
+| WS01 | Active Directory and DNS server | 192.168.50.20 | Windows Server 2022 |
+| AC02 | Domain-joined test workstation | 192.168.50.126 | Windows 11 Pro |
+| UBV01 | Linux web server | 192.168.50.219 | Ubuntu Server 26.04.1 LTS |
+| OPS01 | Linux administration workstation | 192.168.50.242 | Linux Mint |
+All devices operated within the `192.168.50.0/24` lab network.
+The web server was hosted on UBV01, which had previously been configured with SSH access and the UFW firewall.
+### Network Communication
+The web server was accessed using the following path:
+`AC02 → TCP Port 80 → UBV01 → Nginx → HTML Webpage`
+The Windows client sent an HTTP request to UBV01, where Nginx processed the request and returned the webpage.
+
+## 3. Preparing Ubuntu Server
+Connected to UBV01 remotely from OPS01 using SSH:
+```bash
+ssh labadmin@192.168.50.219
+```
+Verified the server's hostname, network configuration, SSH service, and firewall configuration.
+```bash
+hostname
+ip addr
+sudo systemctl status ssh
+sudo ufw status verbose
+```
+Confirmed that UBV01 was reachable at `192.168.50.219`, SSH was active, and UFW permitted incoming SSH connections.
+### Updating Installed Packages
+Refreshed Ubuntu's package information:
+```bash
+sudo apt update
+```
+Ubuntu reported that 53 packages had upgrades available.
+Installed the available upgrades:
+```bash
+sudo apt upgrade
+```
+During the upgrade process, Ubuntu reported that some active user sessions were still using outdated binaries.
+This was an informational notice rather than an installation failure.
+**Lesson learned:** Package upgrades can replace software files while existing processes continue using previously loaded versions. Some changes may require a service restart, a new login session, or a system reboot to take full effect.
+
+## 4. Installing Nginx
+Installed the Nginx web server:
+```bash
+sudo apt install nginx
+```
+Nginx is a web server that accepts HTTP requests from clients and delivers content such as HTML pages.
+It can also be used as a reverse proxy and load balancer, although those capabilities were outside the scope of this exercise.
+### Verifying the Service
+Checked Nginx's status:
+```bash
+sudo systemctl status nginx
+```
+Confirmed that the service was loaded and running.
+Performed an additional check:
+```bash
+systemctl is-active nginx
+```
+**Result:**
+```text
+active
+```
+This confirmed that Nginx was running successfully.
+### Checking Listening Ports
+Executed:
+```bash
+sudo ss -tulpn | grep nginx
+```
+The output included:
+```text
+TCP LISTEN 0 511 0.0.0.0:80
+```
+This indicated that Nginx was listening for incoming TCP connections on port 80 across all IPv4 interfaces.
+Important details:
+- **TCP:** The transport protocol used for the HTTP connection.
+- **LISTEN:** The service was waiting for incoming connections.
+- **0.0.0.0:** The service was bound to all available IPv4 interfaces.
+- **80:** The standard port for unencrypted HTTP.
+**Lesson learned:** A service can be installed and running without necessarily being reachable from another computer. Successful connectivity also depends on its listening address, firewall rules, and network path.
+
+## 5. Configuring the Linux Firewall
+UBV01 was already using UFW to manage incoming network traffic.
+Before deploying the web server, SSH access was permitted.
+Allowed incoming HTTP connections:
+```bash
+sudo ufw allow 80/tcp
+```
+Verified the firewall configuration:
+```bash
+sudo ufw status
+```
+**Observed rules:**
+```text
+OpenSSH    ALLOW IN    Anywhere
+80/tcp     ALLOW IN    Anywhere
+```
+
+These rules permitted incoming SSH and HTTP traffic.
+### Why This Was Necessary
+Even though Nginx was listening on TCP port 80, a firewall could prevent clients from connecting.
+Opening the port allowed AC02 to establish HTTP connections with UBV01.
+**Security consideration:** The firewall rule permits HTTP from any source that can reach the server through the network. For a production deployment, access restrictions should be determined by the server's purpose and security requirements.
+
+## 6. Testing the Web Server from Windows
+On AC02, opened Microsoft Edge and navigated to:
+```text
+http://192.168.50.219
+```
+The browser displayed:
+**Welcome to nginx!**
+This confirmed that:
+1. AC02 could communicate with UBV01.
+2. TCP port 80 was reachable.
+3. UFW permitted the connection.
+4. Nginx accepted and processed the request.
+5. The web server returned an HTML page to the browser.
+The test used HTTP rather than HTTPS because TLS encryption had not yet been configured.
+
+## 7. Creating a Custom Webpage
+After confirming the default webpage worked, replaced it with a custom Blackwood IT Lab page.
+Opened the default Nginx HTML file:
+```bash
+sudo nano /var/www/html/index.nginx-debian.html
+```
+Replaced its contents with:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Blackwood IT Lab</title>
+</head>
+<body>
+    <h1>Blackwood IT Lab</h1>
+    <h2>Web Server: UBV01</h2>
+    <p>Nginx is running on Ubuntu Server.</p>
+    <p>Deployed as part of Day 6 of the IT Infrastructure Lab.</p>
+</body>
+</html>
+```
+Saved the file using `Ctrl + O`, confirmed with Enter, and exited Nano using `Ctrl + X`.
+### Verification
+Returned to AC02 and refreshed:
+```text
+http://192.168.50.219
+```
+The browser displayed the custom Blackwood IT Lab webpage, including the server name and deployment description.
+**Result:** Successfully hosted a custom HTML page from Ubuntu Server and accessed it from a separate Windows workstation.
+
+## 8. Examining Web Server Logs
+Nginx maintains access logs containing information about incoming HTTP requests.
+Viewed the ten most recent entries:
+```bash
+sudo tail -n 10 /var/log/nginx/access.log
+```
+The logs showed requests originating from AC02 at `192.168.50.126`.
+### Understanding the Log Entries
+| Log Information | Meaning |
+|---|---|
+| `192.168.50.126` | Client IP address |
+| `GET / HTTP/1.1` | HTTP request for the website's root path |
+| `200` | Request completed successfully |
+| `404` | Requested resource was not found |
+| `Mozilla/5.0` | Part of the browser's user-agent identification |
+A successful request returned HTTP status code `200`.
+The logs also included a `404` response for `favicon.ico`, a browser-requested website icon that was not present.
+This did not prevent the main webpage from loading.
+### Why Logs Matter
+Access logs can help administrators identify:
+- Which clients are accessing a service.
+- What resources clients are requesting.
+- Whether requests succeed or fail.
+- When requests occur.
+- Patterns that may indicate application errors or unusual activity.
+**Lesson learned:** Logs provide evidence of what a server received and how it responded, making them an important resource for troubleshooting.
+
+## 9. Controlled Failure — Website Unavailable
+To practice troubleshooting, intentionally stopped the Nginx service.
+The simulated help desk ticket was:
+**Issue:** Users report that the Blackwood IT Lab website is no longer accessible.
+### Creating the Failure
+On UBV01:
+```bash
+sudo systemctl stop nginx
+```
+On AC02, refreshed:
+```text
+http://192.168.50.219
+```
+**Observed result:**
+```text
+Hmmm... can't reach this page
+```
+The webpage was no longer accessible.
+### Investigating the Failure
+Returned to UBV01 and checked the service:
+```bash
+sudo systemctl status nginx
+```
+**Observed result:**
+```text
+inactive
+```
+This identified that the web server service was no longer running.
+The Ubuntu virtual machine itself remained operational, and the existing SSH administration session was still available.
+### Root Cause
+The Nginx service had been intentionally stopped.
+As a result, the web server was unavailable to handle incoming HTTP requests.
+The failure was at the application/service level rather than a complete operating system or virtual machine outage.
+### Restoring Service
+Started Nginx:
+```bash
+sudo systemctl start nginx
+```
+Verified its status:
+```bash
+systemctl is-active nginx
+```
+**Result:**
+```text
+active
+```
+Returned to AC02 and refreshed the webpage.
+**Result:** The Blackwood IT Lab webpage loaded successfully again.
+### Troubleshooting Takeaway
+A website being inaccessible does not automatically mean the server is offline.
+Possible causes include:
+- A stopped or failed web service.
+- A firewall blocking the required port.
+- A network connectivity problem.
+- An incorrect IP address or hostname.
+- A DNS resolution problem.
+- An application configuration error.
+In this exercise, the actual cause was an inactive Nginx service.
+Checking service status identified the problem, and starting the service restored access.
+
+## 10. Verifying Automatic Startup
+Checked whether Nginx was configured to start automatically during system boot:
+```bash
+systemctl is-enabled nginx
+```
+**Result:**
+```text
+enabled
+```
+This confirmed that Nginx was configured to start automatically when UBV01 boots.
+**Important distinction:**
+- `systemctl is-active nginx` checks whether Nginx is currently running.
+- `systemctl is-enabled nginx` checks whether Nginx is configured for automatic startup.
+A service can be enabled without currently being active, or active without being enabled.
+
+## 11. HTTP vs. HTTPS
+The deployed website used HTTP on TCP port 80.
+HTTP allows browsers and web servers to exchange requests and responses, but it does not provide transport encryption by itself.
+HTTPS uses TLS to encrypt communication between a client and web server. It commonly uses TCP port 443.
+For this internal lab exercise, HTTP was sufficient to demonstrate web server deployment and connectivity.
+A future exercise could introduce TLS certificates, HTTPS configuration, and HTTP-to-HTTPS redirects.
+
+## 12. Commands Practiced
+| Command | Purpose |
+|---|---|
+| `ssh labadmin@192.168.50.219` | Connect to UBV01 remotely |
+| `sudo apt update` | Refresh package information |
+| `sudo apt upgrade` | Upgrade installed packages |
+| `sudo apt install nginx` | Install Nginx |
+| `sudo systemctl status nginx` | Inspect the Nginx service |
+| `systemctl is-active nginx` | Check whether Nginx is running |
+| `systemctl is-enabled nginx` | Check automatic startup configuration |
+| `sudo ss -tulpn` | Inspect listening network sockets |
+| `sudo ufw allow 80/tcp` | Permit incoming HTTP connections |
+| `sudo ufw status` | Inspect firewall rules |
+| `sudo nano /var/www/html/index.nginx-debian.html` | Edit the webpage |
+| `sudo tail -n 10 /var/log/nginx/access.log` | View recent HTTP requests |
+| `sudo systemctl stop nginx` | Stop the web server |
+| `sudo systemctl start nginx` | Start the web server |
+
+## 13. Skills Demonstrated
+- Linux server administration through SSH.
+- Package management using APT.
+- Installation and configuration of Nginx.
+- Managing Linux services with systemd.
+- Inspecting TCP listening ports.
+- Configuring UFW firewall rules.
+- Creating and editing basic HTML.
+- Hosting a webpage on a Linux server.
+- Testing HTTP connectivity from a Windows client.
+- Reading and interpreting web server access logs.
+- Diagnosing and recovering from a controlled service outage.
+- Verifying automatic service startup.
+
+## 14. Recommended Evidence
+The following screenshots can be included in the GitHub repository:
+1. **Custom webpage:** Blackwood IT Lab page displayed in AC02's browser.
+2. **Service status:** Nginx showing `active (running)`.
+3. **Firewall configuration:** UFW showing SSH and TCP port 80 allowed.
+4. **Listening port:** Nginx listening on TCP port 80.
+5. **Access logs:** Successful HTTP requests from AC02.
+6. **Troubleshooting:** Nginx showing `inactive` during the controlled outage.
+Suggested folder:
+```text
+Photos/Day-6/
+```
+Before publishing screenshots, review them for credentials, personal information, and other sensitive details.
+
+## 15. Final Results
+| Test | Result |
+|---|---|
+| Nginx installation | Passed |
+| Nginx service active | Passed |
+| TCP port 80 listening | Passed |
+| UFW HTTP rule configured | Passed |
+| Default webpage accessible from AC02 | Passed |
+| Custom webpage accessible from AC02 | Passed |
+| HTTP access logs reviewed | Passed |
+| Controlled service outage reproduced | Passed |
+| Root cause identified | Passed |
+| Web service restored | Passed |
+| Automatic startup enabled | Passed |
+**Overall Result: SUCCESS**
+
+## 16. Reflection
+Day 6 introduced the practical responsibilities involved in deploying and maintaining a Linux web service.
+The most important lesson was understanding that several components must work together for a website to be accessible: the server operating system, web server process, network configuration, firewall rules, and client connection.
+The controlled outage reinforced the importance of identifying which component has failed before attempting a repair.
+Rather than assuming the entire server was offline, checking the Nginx service revealed the specific cause of the problem.
+This exercise provided foundational experience in Linux administration, web hosting, service monitoring, and structured troubleshooting.
+
+---
+**Day 6 Status: Completed**  
+**Next Focus:** Continue expanding the Blackwood IT Lab infrastructure and administration skills.
