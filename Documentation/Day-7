@@ -1,0 +1,525 @@
+# Day 7 — Linux User Management, File Permissions & Access Control
+**Project:** Blackwood IT Lab  
+**Environment:** Proxmox VE, Ubuntu Server 26.04.1 LTS  
+**Focus:** Linux Users, Groups, File Ownership, Permissions, Setgid, ACLs, Least Privilege, Troubleshooting  
+**Status:** Completed
+---
+## 1. Objective
+The objective of Day 7 was to understand how Linux manages user identities, group memberships, file ownership, and access permissions.
+The exercise involved creating a standard user account, protecting private directories, configuring a shared workspace, and troubleshooting permission-related failures.
+The final goal was to configure a directory where authorized users could collaborate without manually adjusting the ownership and permissions of every newly created file.
+A final security test verified that unauthorized accounts were denied access.
+
+## 2. Lab Environment
+| Device | Role | IP Address | Operating System |
+|---|---|---|---|
+| MS01 | Virtualization host | 192.168.50.10 | Proxmox VE |
+| UBV01 | Linux server | 192.168.50.219 | Ubuntu Server 26.04.1 LTS |
+| OPS01 | Administration workstation | 192.168.50.242 | Linux Mint |
+All Linux administration tasks were performed on UBV01 through an SSH connection initiated from OPS01.
+Connected using:
+```bash
+ssh labadmin@192.168.50.219
+```
+The exercises used dedicated practice directories and did not require changes to the Nginx web server deployed on Day 6.
+
+## 3. Inspecting Linux User Identity
+Before creating additional accounts, inspected the existing administrator account.
+Commands executed:
+```bash
+whoami
+id
+groups
+```
+### Observed Results
+The current user was:
+```text
+labadmin
+```
+The account had UID `1000` and belonged to several groups, including:
+- `labadmin`
+- `adm`
+- `cdrom`
+- `sudo`
+- `dip`
+- `plugdev`
+- `users`
+- `lxd`
+### Understanding Linux Identities
+Linux identifies users and groups through numerical identifiers:
+- **UID (User ID):** Identifies an individual account.
+- **GID (Group ID):** Identifies a group.
+- **Primary group:** The account's default group.
+- **Supplementary groups:** Additional groups that grant access to resources.
+The `sudo` group allows authorized users to execute commands with elevated privileges according to the system's sudo configuration.
+Membership in the `sudo` group does not mean every command automatically runs as root.
+### Security Consideration
+Some Linux groups provide elevated capabilities.
+For example, membership in `lxd` can provide powerful container-management privileges and may effectively allow administrative control on certain configurations.
+This reinforces the importance of periodically reviewing group memberships and applying least privilege.
+
+## 4. Creating a Standard User Account
+Created a fictional employee account for Alex Morgan.
+Command:
+```bash
+sudo adduser amorgan
+```
+During account creation:
+- Assigned a unique lab-only password.
+- Entered the user's name.
+- Completed the optional account information prompts.
+Verified the new account:
+```bash
+id amorgan
+```
+The account was assigned UID `1001`.
+Checked group membership:
+```bash
+groups amorgan
+```
+**Observed result:**
+```text
+amorgan : amorgan users
+```
+Alex belonged to the primary group `amorgan` and the supplementary group `users`.
+The account was not a member of `sudo`.
+### Lesson Learned
+Creating separate standard user accounts allows Linux administrators to control access without granting unnecessary administrative privileges.
+This follows the **principle of least privilege**, where accounts receive only the permissions required to perform their intended tasks.
+
+## 5. Creating a Protected Directory
+Created a private directory owned by `labadmin`.
+```bash
+mkdir ~/private-lab
+```
+Restricted its permissions:
+```bash
+chmod 700 ~/private-lab
+```
+Inspected the directory:
+```bash
+ls -ld ~/private-lab
+```
+**Observed permissions:**
+```text
+drwx------ ... labadmin labadmin ... /home/labadmin/private-lab
+```
+### Understanding Permission Mode 700
+| Identity | Permission | Meaning |
+|---|---|---|
+| Owner | `rwx` | Read, write, and traverse |
+| Group | `---` | No access |
+| Others | `---` | No access |
+For directories, execute permission allows a user to traverse the directory.
+Without the necessary directory permissions, a user may be unable to access files even if those files have more permissive settings.
+
+## 6. Testing Unauthorized Access
+Attempted to access the protected directory using Alex's account.
+```bash
+sudo -u amorgan ls /home/labadmin/private-lab
+```
+**Observed result:**
+```text
+Permission denied
+```
+Linux successfully prevented the standard user from listing the protected directory.
+### Investigating Parent Directory Permissions
+Executed:
+```bash
+ls -ld /home/labadmin /home/labadmin/private-lab
+```
+**Observed permissions:**
+```text
+drwxr-x--- ... labadmin labadmin ... /home/labadmin
+drwx------ ... labadmin labadmin ... /home/labadmin/private-lab
+```
+The home directory had mode `750`, while the private directory had mode `700`.
+Alex lacked permission to traverse the home directory and also lacked access to the protected subdirectory.
+### Lesson Learned
+Linux checks permissions along the entire directory path.
+A `Permission denied` error may be caused by a parent directory rather than the target file or directory itself.
+This distinction is important when troubleshooting access problems.
+
+## 7. Creating a Shared Workspace
+Created a separate shared directory for collaboration.
+```bash
+sudo mkdir /srv/blackwood-lab
+```
+Assigned ownership:
+```bash
+sudo chown labadmin:users /srv/blackwood-lab
+```
+Configured permissions:
+```bash
+sudo chmod 770 /srv/blackwood-lab
+```
+Verified the configuration:
+```bash
+ls -ld /srv/blackwood-lab
+```
+**Expected and observed configuration:**
+```text
+drwxrwx--- ... labadmin users ... /srv/blackwood-lab
+```
+### Understanding Permission Mode 770
+| Identity | Permissions |
+|---|---|
+| Owner (`labadmin`) | Read, write, execute |
+| Group (`users`) | Read, write, execute |
+| Others | No access |
+Because both `labadmin` and `amorgan` belonged to the `users` group, both accounts were intended to have access to the shared workspace.
+
+## 8. Testing Group Access
+Created a file using Alex's account:
+```bash
+sudo -u amorgan touch /srv/blackwood-lab/alex-test.txt
+```
+The command completed successfully.
+This confirmed that Alex could create files inside the shared directory through group permissions.
+Inspected the new file:
+```bash
+ls -l /srv/blackwood-lab/alex-test.txt
+```
+The file was owned by `amorgan` and initially had permissions equivalent to:
+```text
+-rw-r--r--
+```
+### Important Discovery
+Although the shared directory allowed group writing, the newly created file did not automatically provide group write access.
+Directory permissions and file permissions are evaluated separately.
+
+## 9. Troubleshooting — Shared File Cannot Be Modified
+Attempted to append text to Alex's file while logged in as `labadmin`.
+```bash
+echo "Edited by labadmin" >> /srv/blackwood-lab/alex-test.txt
+```
+**Observed result:**
+```text
+Permission denied
+```
+At first, the failure appeared to be caused by missing group write permission.
+### Initial Attempted Fix
+Used Alex's account to grant group write permission:
+```bash
+sudo -u amorgan chmod g+w /srv/blackwood-lab/alex-test.txt
+```
+Verified that the file had mode `664`:
+```text
+-rw-rw-r--
+```
+However, retrying the write operation still produced:
+```text
+Permission denied
+```
+This demonstrated that changing a permission bit does not guarantee access if the relevant user does not belong to the file's owning group.
+### Investigating the Failure
+Confirmed the active identity:
+```bash
+whoami
+id
+```
+Verified that `labadmin` was logged in and belonged to the `users` group.
+Next, inspected every component of the file path:
+```bash
+namei -l /srv/blackwood-lab/alex-test.txt
+```
+The results revealed the actual problem:
+```text
+drwxrwx--- labadmin users   blackwood-lab
+-rw-rw-r-- amorgan  amorgan alex-test.txt
+```
+### Root Cause
+The directory belonged to the `users` group, but the file belonged to Alex's primary group, `amorgan`.
+Therefore, granting group write permission applied to the `amorgan` group rather than the intended shared `users` group.
+Because `labadmin` was not a member of the `amorgan` group, the write operation continued to fail.
+### Corrective Action
+Changed the file's group ownership:
+```bash
+sudo chown :users /srv/blackwood-lab/alex-test.txt
+```
+Verified:
+```bash
+ls -l /srv/blackwood-lab/alex-test.txt
+```
+**Result:**
+```text
+-rw-rw-r-- ... amorgan users ... alex-test.txt
+```
+Retested the original operation:
+```bash
+echo "Edited by labadmin" >> /srv/blackwood-lab/alex-test.txt
+```
+Read the file:
+```bash
+cat /srv/blackwood-lab/alex-test.txt
+```
+**Observed result:**
+```text
+Edited by labadmin
+```
+The issue was resolved.
+### Troubleshooting Lesson
+This exercise demonstrated the difference between two important commands:
+- `chmod` modifies access permissions.
+- `chown` modifies file ownership and group ownership.
+Both must be correct for the intended access to work.
+The failure was resolved by identifying the actual cause rather than repeatedly granting additional permissions.
+
+## 10. Configuring Automatic Group Inheritance
+Although manually changing the file's group corrected the immediate issue, repeating that process for every new file would be inefficient.
+To solve this, enabled the setgid bit on the shared directory.
+```bash
+sudo chmod g+s /srv/blackwood-lab
+```
+Verified:
+```bash
+ls -ld /srv/blackwood-lab
+```
+**Observed result:**
+```text
+drwxrws--- ... labadmin users ... blackwood-lab
+```
+The `s` in the group execute position indicated that setgid was enabled.
+### What Setgid Does
+When setgid is enabled on a directory, newly created files and subdirectories inherit the directory's group ownership.
+This helps maintain consistent group ownership in shared workspaces.
+### Testing Group Inheritance
+Created another file as Alex:
+```bash
+sudo -u amorgan touch /srv/blackwood-lab/alex-second-test.txt
+```
+Inspected it:
+```bash
+ls -l /srv/blackwood-lab/alex-second-test.txt
+```
+**Observed result:**
+```text
+-rw-r--r-- ... amorgan users ... alex-second-test.txt
+```
+The file automatically inherited the `users` group.
+**Result: Successful group inheritance.**
+However, the file still lacked group write permission.
+This required an additional configuration change.
+
+## 11. Understanding Umask
+Checked Alex's default umask:
+```bash
+sudo -u amorgan sh -c 'umask'
+```
+**Observed result:**
+```text
+0022
+```
+### What Umask Controls
+Umask influences which permission bits are removed when new files and directories are created.
+With a typical umask of `0022`:
+| Resource | Typical Permissions |
+|---|---|
+| New regular file | `644` |
+| New directory | `755` |
+This explains why Alex's newly created file did not automatically receive group write permission.
+Setgid controlled the group ownership, but it did not independently grant group write access.
+Rather than changing Alex's account-wide umask, the lab used default Access Control Lists to configure permissions specifically for the shared directory.
+
+## 12. Installing ACL Management Tools
+Attempted to inspect the shared directory's ACL:
+```bash
+getfacl /srv/blackwood-lab
+```
+The command initially returned:
+```text
+Command not found
+```
+Installed the required package:
+```bash
+sudo apt install acl
+```
+The package provided:
+- `getfacl` — Displays Access Control Lists.
+- `setfacl` — Configures Access Control Lists.
+### Initial ACL Inspection
+Executed:
+```bash
+getfacl /srv/blackwood-lab
+```
+**Observed result:**
+```text
+# file: srv/blackwood-lab
+# owner: labadmin
+# group: users
+# flags: -s-
+user::rwx
+group::rwx
+other::---
+```
+The directory had the expected ownership and permissions.
+No default ACL entries had been configured yet.
+
+## 13. Configuring Default ACLs
+Configured default permissions for new files and directories:
+```bash
+sudo setfacl -d -m u::rwx,g::rwx,o::--- /srv/blackwood-lab
+```
+This established inherited ACL entries for newly created resources.
+Verified the configuration:
+```bash
+getfacl /srv/blackwood-lab
+```
+**Observed default entries:**
+```text
+default:user::rwx
+default:group::rwx
+default:other::---
+```
+### Understanding Default ACLs
+Default ACLs define permissions inherited by newly created files and subdirectories.
+For this lab:
+- The owner receives appropriate access.
+- The owning group receives read/write access to new regular files.
+- Unrelated users receive no access.
+- New subdirectories can inherit the default ACL configuration.
+The default ACL works alongside the setgid directory setting to provide consistent group ownership and access permissions.
+Regular files do not automatically become executable simply because the directory's default ACL includes execute permission.
+
+## 14. Verifying Automatic Permissions
+Created a third file as Alex:
+```bash
+sudo -u amorgan touch /srv/blackwood-lab/alex-third-test.txt
+```
+Inspected the result:
+
+```bash
+ls -l /srv/blackwood-lab/alex-third-test.txt
+```
+**Observed result:**
+```text
+-rw-rw----+ ... amorgan users ... alex-third-test.txt
+```
+This confirmed:
+- The owner was `amorgan`.
+- The group was automatically inherited as `users`.
+- The group had read/write permissions.
+- Other users had no permissions.
+- An extended ACL was present, indicated by `+`.
+### Testing Collaborative Editing
+As `labadmin`, appended text without using sudo:
+```bash
+echo "Shared permissions working!" >> /srv/blackwood-lab/alex-third-test.txt
+```
+Read the file:
+```bash
+cat /srv/blackwood-lab/alex-third-test.txt
+```
+**Observed result:**
+```text
+Shared permissions working!
+```
+**Result: Successful collaborative file editing without manual permission changes.**
+The shared workspace now automatically provided the intended group ownership and permissions for newly created files.
+
+## 15. Final Security Test — Unauthorized Access
+To verify that access was restricted to authorized users, attempted to list the shared directory using the existing `nobody` account.
+```bash
+sudo -u nobody ls /srv/blackwood-lab
+```
+**Observed result:**
+```text
+ls: cannot open directory '/srv/blackwood-lab': Permission denied
+```
+This confirmed that the unauthorized account could not list the shared directory.
+### Security Result
+The lab demonstrated both sides of access control:
+**Authorized access:**
+- `amorgan` could create files.
+- `labadmin` could edit files through group permissions.
+**Unauthorized access:**
+- `nobody` could not list the shared directory.
+The configuration enforced the intended separation between authorized and unauthorized users.
+
+## 16. Commands Practiced
+| Command | Purpose |
+|---|---|
+| `whoami` | Display the current username |
+| `id` | Display UID, GID, and group memberships |
+| `groups` | Inspect group memberships |
+| `adduser` | Create a Linux user |
+| `mkdir` | Create directories |
+| `chmod` | Modify permissions |
+| `chown` | Modify ownership |
+| `ls -l` | Inspect file permissions and ownership |
+| `ls -ld` | Inspect directory permissions |
+| `sudo -u` | Execute commands as another user |
+| `namei -l` | Inspect permissions along a filesystem path |
+| `touch` | Create an empty file |
+| `echo` | Output text |
+| `cat` | Display file contents |
+| `umask` | Inspect the file creation permission mask |
+| `getfacl` | Display ACL configuration |
+| `setfacl` | Configure ACL permissions |
+
+## 17. Skills Demonstrated
+- Linux user account creation and administration.
+- Understanding UID and GID identifiers.
+- Inspecting group memberships.
+- Applying the principle of least privilege.
+- Configuring file and directory permissions.
+- Understanding permission modes `700`, `750`, `770`, `644`, and `664`.
+- Troubleshooting access-denied errors.
+- Inspecting permissions across directory paths.
+- Distinguishing file ownership from group ownership.
+- Configuring shared directories.
+- Enabling setgid for group inheritance.
+- Understanding umask behavior.
+- Installing and configuring ACL management tools.
+- Applying inherited permissions using default ACLs.
+- Verifying authorized and unauthorized access.
+
+## 18. Production Security Considerations
+The lab used the existing `users` group to demonstrate Linux group permissions.
+In a production environment, a dedicated group would generally provide more precise access control.
+For example, a departmental group such as `blackwood-staff` could be created and assigned only to employees requiring access.
+This would avoid granting access to unrelated accounts that happen to belong to the general-purpose `users` group.
+Additional production considerations include:
+- Reviewing administrative group memberships.
+- Restricting sensitive directories to dedicated groups.
+- Auditing ACL configurations.
+- Monitoring ownership and permission changes.
+- Avoiding unnecessary use of root privileges.
+- Periodically reviewing access for departed employees.
+- Testing both successful and denied access after permission changes.
+
+## 19. Final Results
+| Test | Result |
+|---|---|
+| Standard user created | Passed |
+| User and group memberships inspected | Passed |
+| Private directory secured | Passed |
+| Unauthorized private directory access denied | Passed |
+| Shared workspace created | Passed |
+| Group-based file creation successful | Passed |
+| Initial file modification failure reproduced | Passed |
+| Incorrect group ownership identified | Passed |
+| File ownership corrected | Passed |
+| File modification restored | Passed |
+| Setgid group inheritance configured | Passed |
+| Group inheritance verified | Passed |
+| Umask inspected | Passed |
+| ACL tools installed | Passed |
+| Default ACLs configured | Passed |
+| Automatic group write permissions verified | Passed |
+| Collaborative file editing successful | Passed |
+| Unauthorized account denied access | Passed |
+**Overall Result: SUCCESS**
+
+## 20. Reflection
+Day 7 demonstrated how Linux combines user identities, group memberships, file ownership, and permission settings to control access to resources.
+The most valuable part of the exercise was troubleshooting an unexpected permission failure.
+Initially, granting group write permission appeared sufficient to resolve the problem. However, the operation continued to fail because the file belonged to a different group than the shared directory.
+Using `namei -l` revealed the ownership mismatch, allowing the issue to be corrected without unnecessarily weakening the directory's security.
+The exercise then progressed from manually correcting permissions to implementing a more sustainable configuration using setgid and default ACLs.
+Finally, successful access by authorized users and denied access by an unauthorized account confirmed that the configuration behaved as intended.
+This exercise reinforced an important systems administration principle:
+**A permission configuration should be verified through actual access tests, not assumed to be correct based solely on its settings.**
+---
+**Day 7 Status: Completed**
+**Next Focus:** Continue developing Linux administration and infrastructure security skills through additional hands-on exercises.
