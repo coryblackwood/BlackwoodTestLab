@@ -300,21 +300,7 @@ A future exercise could introduce TLS certificates, HTTPS configuration, and HTT
 - Diagnosing and recovering from a controlled service outage.
 - Verifying automatic service startup.
 
-## 14. Recommended Evidence
-The following screenshots can be included in the GitHub repository:
-1. **Custom webpage:** Blackwood IT Lab page displayed in AC02's browser.
-2. **Service status:** Nginx showing `active (running)`.
-3. **Firewall configuration:** UFW showing SSH and TCP port 80 allowed.
-4. **Listening port:** Nginx listening on TCP port 80.
-5. **Access logs:** Successful HTTP requests from AC02.
-6. **Troubleshooting:** Nginx showing `inactive` during the controlled outage.
-Suggested folder:
-```text
-Photos/Day-6/
-```
-Before publishing screenshots, review them for credentials, personal information, and other sensitive details.
-
-## 15. Final Results
+## 14. Final Results
 | Test | Result |
 |---|---|
 | Nginx installation | Passed |
@@ -330,7 +316,7 @@ Before publishing screenshots, review them for credentials, personal information
 | Automatic startup enabled | Passed |
 **Overall Result: SUCCESS**
 
-## 16. Reflection
+## 15. Reflection
 Day 6 introduced the practical responsibilities involved in deploying and maintaining a Linux web service.
 The most important lesson was understanding that several components must work together for a website to be accessible: the server operating system, web server process, network configuration, firewall rules, and client connection.
 The controlled outage reinforced the importance of identifying which component has failed before attempting a repair.
